@@ -24,7 +24,6 @@ from telegram.ext import (
     filters,
 )
 
-import anthropic
 import requests
 
 # Flask для Render Web Service
@@ -55,7 +54,6 @@ logger = logging.getLogger(__name__)
 
 # Константы
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-ANTHROPIC_API_KEY = os.getenv('ANTHROPIC_API_KEY')
 NOTION_API_KEY = os.getenv('NOTION_API_KEY', '')  # Опционально
 NOTION_DATABASE_ID = os.getenv('NOTION_DATABASE_ID', '')  # Опционально
 TIMEZONE = 'Europe/Amsterdam'
@@ -126,54 +124,6 @@ class TaskStorage:
         self.save()
 
 storage = TaskStorage()
-
-# AI Агент для анализа задач
-class AITaskAnalyzer:
-    def __init__(self, api_key: str):
-        self.client = anthropic.Anthropic(api_key=api_key)
-    
-    async def analyze_task(self, text: str) -> Optional[Dict]:
-        try:
-            categories_str = ', '.join(CATEGORIES)
-            current_time = datetime.now(pytz.timezone(TIMEZONE))
-            
-            system_prompt = f"""Ты AI-агент для анализа задач. Извлеки из текста:
-1. Название задачи (title)
-2. Приоритет (priority): urgent_important, important, urgent или low
-   - urgent_important: важное И срочное
-   - important: важное, но не срочное
-   - urgent: срочное, но не важное
-   - low: не важное и не срочное
-3. Категорию (category): {categories_str}
-4. Дедлайн (deadline) в ISO 8601 или null
-
-Текущая дата и время: {current_time.isoformat()}
-
-Верни ТОЛЬКО JSON:
-{{
-  "title": "название",
-  "priority": "urgent_important|important|urgent|low",
-  "category": "одна из категорий",
-  "deadline": "ISO 8601 или null"
-}}"""
-            
-            message = self.client.messages.create(
-                model="claude-sonnet-4-20250514",
-                max_tokens=1000,
-                system=system_prompt,
-                messages=[{"role": "user", "content": text}]
-            )
-            
-            response_text = message.content[0].text.strip()
-            response_text = response_text.replace('```json', '').replace('```', '').strip()
-            
-            return json.loads(response_text)
-        
-        except Exception as e:
-            logger.error(f"AI analysis error: {e}")
-            return None
-
-ai_analyzer = AITaskAnalyzer(ANTHROPIC_API_KEY)
 
 # Notion Integration
 class NotionIntegration:
@@ -297,14 +247,14 @@ notion = NotionIntegration(NOTION_API_KEY, NOTION_DATABASE_ID)
 # Команды бота
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = """
-🤖 <b>Привет! Я AI Task Tracker v2.0</b>
+🤖 <b>Привет! Я Task Tracker Bot</b>
 
 <b>Что я умею:</b>
-✅ Добавлять задачи голосом или текстом
-🎯 Автоматически определять приоритет и категорию
-📅 Синхронизация с Notion
-🌅 Утренний дайджест в 9:00
-⏰ Напоминания о дедлайнах
+✅ Добавлять задачи
+📁 Организовывать по категориям
+🎯 Расставлять приоритеты
+📅 Показывать задачи по датам
+📊 Считать статистику
 
 <b>Команды:</b>
 /help - Справка
@@ -312,12 +262,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /tomorrow - Задачи на завтра
 /week - Задачи на неделю
 /all - Все задачи
-/notion - Синхронизация с Notion
 /stats - Статистика
 
-<b>Просто отправьте:</b>
-🎤 Голосовое сообщение
-💬 Текст задачи
+<b>Просто напишите задачу!</b>
+Например: "Позвонить клиенту"
 """
     await update.message.reply_text(welcome_text, parse_mode='HTML')
 
@@ -325,10 +273,11 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """
 <b>📖 Справка</b>
 
-<b>Примеры задач:</b>
-🎤 "Срочно позвонить китайцу завтра в 15:00"
-💬 "Написать пост в блог на следующей неделе"
-💬 "Встреча с командой IPG в пятницу"
+<b>Как добавить задачу:</b>
+1. Просто напишите задачу текстом
+2. Выберите категорию из кнопок
+3. Выберите приоритет
+4. Готово! ✅
 
 <b>Категории:</b>
 • Встречи • Личное • Работа • IPG
@@ -345,7 +294,8 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /today - Задачи на сегодня
 /tomorrow - Задачи на завтра
 /week - Задачи на неделю
-/notion - Синхронизация с Notion
+/all - Все задачи
+/stats - Статистика
 """
     await update.message.reply_text(help_text, parse_mode='HTML')
 
@@ -570,37 +520,29 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     user_id = update.effective_user.id
     
-    await update.message.reply_text("⏳ Анализирую задачу...")
+    # Сохраняем текст задачи во временное хранилище
+    if user_id not in context.user_data:
+        context.user_data[user_id] = {}
     
-    analyzed = await ai_analyzer.analyze_task(text)
+    context.user_data[user_id]['task_text'] = text
     
-    if not analyzed:
-        await update.message.reply_text("❌ Не удалось проанализировать. Попробуйте переформулировать.")
-        return
+    # Клавиатура с категориями
+    keyboard = []
+    row = []
+    for i, category in enumerate(CATEGORIES):
+        row.append(InlineKeyboardButton(category, callback_data=f"cat_{category}"))
+        if len(row) == 2 or i == len(CATEGORIES) - 1:
+            keyboard.append(row)
+            row = []
     
-    task = {
-        'id': int(datetime.now().timestamp() * 1000),
-        'title': analyzed['title'],
-        'priority': analyzed['priority'],
-        'category': analyzed['category'],
-        'deadline': analyzed['deadline'],
-        'completed': False,
-        'created_at': datetime.now(pytz.timezone(TIMEZONE)).isoformat()
-    }
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
-    storage.add_task(user_id, task)
-    
-    # Синхронизация с Notion если настроено
-    if notion.is_configured():
-        await notion.create_task(task)
-    
-    task_text, keyboard = format_task(task)
-    response = "✅ <b>Задача добавлена!</b>\n\n" + task_text
-    
-    if notion.is_configured():
-        response += "\n🔗 Синхронизировано с Notion"
-    
-    await update.message.reply_text(response, parse_mode='HTML', reply_markup=keyboard)
+    await update.message.reply_text(
+        f"📝 <b>Задача:</b> {text}\n\n"
+        f"Выберите категорию:",
+        parse_mode='HTML',
+        reply_markup=reply_markup
+    )
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработка голосовых через Telegram transcription API"""
@@ -630,7 +572,60 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     data = query.data
     
-    if data.startswith('complete_'):
+    if data.startswith('cat_'):
+        # Выбрана категория
+        category = data[4:]
+        context.user_data[user_id]['category'] = category
+        
+        # Показываем приоритеты
+        keyboard = []
+        for pri_key, pri_label in PRIORITIES.items():
+            keyboard.append([InlineKeyboardButton(pri_label, callback_data=f"pri_{pri_key}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"📁 Категория: <b>{category}</b>\n\n"
+            f"Выберите приоритет:",
+            parse_mode='HTML',
+            reply_markup=reply_markup
+        )
+    
+    elif data.startswith('pri_'):
+        # Выбран приоритет
+        priority = data[4:]
+        category = context.user_data[user_id].get('category', 'Другое')
+        task_text = context.user_data[user_id].get('task_text', '')
+        
+        # Создаём задачу
+        task = {
+            'id': int(datetime.now().timestamp() * 1000),
+            'title': task_text,
+            'priority': priority,
+            'category': category,
+            'deadline': None,
+            'completed': False,
+            'created_at': datetime.now(pytz.timezone(TIMEZONE)).isoformat()
+        }
+        
+        storage.add_task(user_id, task)
+        
+        # Синхронизация с Notion если настроено
+        if notion.is_configured():
+            await notion.create_task(task)
+        
+        task_formatted, keyboard = format_task(task)
+        response = "✅ <b>Задача добавлена!</b>\n\n" + task_formatted
+        
+        if notion.is_configured():
+            response += "\n🔗 Синхронизировано с Notion"
+        
+        await query.edit_message_text(response, parse_mode='HTML', reply_markup=keyboard)
+        
+        # Очищаем временные данные
+        context.user_data[user_id] = {}
+    
+    elif data.startswith('complete_'):
         task_id = int(data.split('_')[1])
         if storage.complete_task(user_id, task_id):
             await query.edit_message_text(
@@ -724,8 +719,8 @@ async def check_reminders(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error checking reminders for {user_id}: {e}")
 
 def main():
-    if not TELEGRAM_TOKEN or not ANTHROPIC_API_KEY:
-        logger.error("Missing required environment variables!")
+    if not TELEGRAM_TOKEN:
+        logger.error("Missing TELEGRAM_BOT_TOKEN!")
         return
     
     # Запускаем Flask в отдельном потоке для Render
@@ -757,4 +752,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
