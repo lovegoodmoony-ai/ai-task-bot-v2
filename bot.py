@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
@@ -724,27 +723,13 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice))
     app.add_handler(CallbackQueryHandler(handle_callback))
     
-    # Настройка периодических задач (опционально)
-    try:
-        job_queue = app.job_queue
-        
-        if job_queue:
-            job_queue.run_daily(
-                send_morning_digest,
-                time=datetime.strptime('09:00', '%H:%M').time(),
-                days=(0, 1, 2, 3, 4, 5, 6)
-            )
-            
-            job_queue.run_repeating(check_reminders, interval=900, first=10)
-            logger.info("Scheduled tasks enabled")
-        else:
-            logger.warning("JobQueue not available - scheduled tasks disabled")
-    except Exception as e:
-        logger.warning(f"Could not setup scheduled tasks: {e}")
-    
     logger.info("Bot started!")
+    
+    # Примечание: Утренний дайджест и напоминания временно отключены
+    # Используйте команды /today и /tomorrow для просмотра задач
     
     app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 if __name__ == '__main__':
     main()
+
