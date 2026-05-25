@@ -11,6 +11,7 @@ import asyncio
 import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List
+from threading import Thread
 import pytz
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -25,6 +26,25 @@ from telegram.ext import (
 
 import anthropic
 import requests
+
+# Flask для Render Web Service
+from flask import Flask
+
+# Создаём Flask приложение
+flask_app = Flask(__name__)
+
+@flask_app.route('/')
+def home():
+    return "Bot is running! ✅"
+
+@flask_app.route('/health')
+def health():
+    return {"status": "ok"}
+
+def run_flask():
+    """Запуск Flask в отдельном потоке"""
+    port = int(os.environ.get('PORT', 10000))
+    flask_app.run(host='0.0.0.0', port=port)
 
 # Настройка логирования
 logging.basicConfig(
@@ -707,6 +727,11 @@ def main():
     if not TELEGRAM_TOKEN or not ANTHROPIC_API_KEY:
         logger.error("Missing required environment variables!")
         return
+    
+    # Запускаем Flask в отдельном потоке для Render
+    flask_thread = Thread(target=run_flask, daemon=True)
+    flask_thread.start()
+    logger.info("Flask server started")
     
     app = Application.builder().token(TELEGRAM_TOKEN).build()
     
